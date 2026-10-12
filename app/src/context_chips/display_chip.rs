@@ -45,7 +45,7 @@ use crate::context_chips::git_branch_on_click::{
 };
 use crate::context_chips::node_version_popup::{NodeVersionPopupEvent, NodeVersionPopupView};
 use crate::context_chips::spacing;
-use crate::context_chips::tenant_popup::{TenantPopupEvent, TenantPopupView};
+use crate::context_chips::tenants::list_tenants;
 use crate::settings::{AISettings, AISettingsChangedEvent};
 use crate::settings_view::keybindings::{KeybindingChangedEvent, KeybindingChangedNotifier};
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
@@ -631,8 +631,8 @@ pub enum DisplayChipKind {
         popup: ViewHandle<crate::context_chips::node_version_popup::NodeVersionPopupView>,
     },
     Tenant {
-        popup_open: bool,
-        popup: ViewHandle<TenantPopupView>,
+        menu_open: bool,
+        menu: ViewHandle<DisplayChipMenu>,
     },
     AgentPlanAndTodoList {
         plan_and_todo_list: ViewHandle<PlanAndTodoListView>,
@@ -656,10 +656,10 @@ impl DisplayChipKind {
     pub fn has_open_menu(&self) -> bool {
         match self {
             DisplayChipKind::WorkingDirectory { menu_open, .. } => *menu_open,
-            DisplayChipKind::NodeVersion { popup_open, .. }
-            | DisplayChipKind::Tenant { popup_open, .. } => *popup_open,
+            DisplayChipKind::NodeVersion { popup_open, .. } => *popup_open,
             DisplayChipKind::GitBranch { menu_open, .. }
-            | DisplayChipKind::GitBranchStatus { menu_open, .. } => *menu_open,
+            | DisplayChipKind::GitBranchStatus { menu_open, .. }
+            | DisplayChipKind::Tenant { menu_open, .. } => *menu_open,
             DisplayChipKind::GithubPullRequest
             | DisplayChipKind::GitDiffStats { .. }
             | DisplayChipKind::Text
@@ -757,6 +757,31 @@ impl GenericMenuItem for GitBranch {
 
     fn action_data(&self) -> String {
         self.0.clone()
+    }
+}
+
+/// A tenant entry in the tenant switcher. The current tenant is marked with a check.
+#[derive(Debug, Clone)]
+struct TenantItem {
+    label: String,
+    is_current: bool,
+}
+
+impl GenericMenuItem for TenantItem {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn name(&self) -> String {
+        self.label.clone()
+    }
+
+    fn icon(&self, _app: &AppContext) -> Option<Icon> {
+        self.is_current.then_some(Icon::Check)
+    }
+
+    fn action_data(&self) -> String {
+        self.label.clone()
     }
 }
 
@@ -877,6 +902,57 @@ impl DisplayChip {
             }
             PromptDisplayMenuEvent::CloseMenu => {
                 me.close_git_branch_menu(ctx);
+                ctx.emit(PromptDisplayChipEvent::ToggleMenu { open: false });
+                ctx.notify();
+            }
+        });
+
+        menu_view
+    }
+
+    /// Reads the configured tenants from disk, marking `current_tenant`.
+    fn tenant_items(current_tenant: Option<&str>) -> Vec<TenantItem> {
+        list_tenants()
+            .into_iter()
+            .map(|label| TenantItem {
+                is_current: current_tenant == Some(label.as_str()),
+                label,
+            })
+            .collect()
+    }
+
+    /// Builds the tenant-switcher menu: every configured tenant (sorted) becomes a searchable
+    /// menu item, and selecting one writes it to the `.tenant` file via a shell command.
+    fn tenant_menu(
+        current_tenant: Option<String>,
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<DisplayChipMenu> {
+        let tenant_items = Self::tenant_items(current_tenant.as_deref());
+
+        let menu_view = ctx.add_typed_action_view(move |ctx| {
+            DisplayChipMenu::new(tenant_items, None, ChipMenuType::Tenants, ctx)
+        });
+        ctx.subscribe_to_view(&menu_view, |me, _, event, ctx| match event {
+            PromptDisplayMenuEvent::MenuAction(generic_event) => {
+                let Some(tenant) = generic_event
+                    .action_item
+                    .as_any()
+                    .downcast_ref::<TenantItem>()
+                else {
+                    log::warn!("MenuAction event should contain a TenantItem action item");
+                    return;
+                };
+                ctx.emit(PromptDisplayChipEvent::TryExecuteCommand(
+                    PromptChipShellCommand::SwitchTenant {
+                        label: tenant.label.clone(),
+                    },
+                ));
+                me.close_tenant_menu(ctx);
+                ctx.emit(PromptDisplayChipEvent::ToggleMenu { open: false });
+                ctx.notify();
+            }
+            PromptDisplayMenuEvent::CloseMenu => {
+                me.close_tenant_menu(ctx);
                 ctx.emit(PromptDisplayChipEvent::ToggleMenu { open: false });
                 ctx.notify();
             }
@@ -1109,28 +1185,9 @@ impl DisplayChip {
             }
             ContextChipKind::Tenant => {
                 let current_tenant = chip_result.value.as_ref().map(|v| v.to_string());
-                let popup_view =
-                    ctx.add_typed_action_view(move |ctx| TenantPopupView::new(current_tenant, ctx));
-
-                ctx.subscribe_to_view(&popup_view, |me, _, event, ctx| match event {
-                    TenantPopupEvent::Close => {
-                        me.close_tenant_popup(ctx);
-                        ctx.focus_self();
-                    }
-                    TenantPopupEvent::SelectTenant { label } => {
-                        ctx.emit(PromptDisplayChipEvent::TryExecuteCommand(
-                            PromptChipShellCommand::SwitchTenant {
-                                label: label.clone(),
-                            },
-                        ));
-                        me.close_tenant_popup(ctx);
-                        ctx.focus_self();
-                    }
-                });
-
                 DisplayChipKind::Tenant {
-                    popup_open: false,
-                    popup: popup_view,
+                    menu_open: false,
+                    menu: Self::tenant_menu(current_tenant, ctx),
                 }
             }
             _ => DisplayChipKind::Text,
@@ -1225,9 +1282,12 @@ impl DisplayChip {
         }
     }
 
-    fn close_tenant_popup(&mut self, ctx: &mut ViewContext<'_, DisplayChip>) {
-        if let DisplayChipKind::Tenant { popup_open, .. } = &mut self.display_chip_kind {
-            *popup_open = false;
+    fn close_tenant_menu(&mut self, ctx: &mut ViewContext<'_, DisplayChip>) {
+        if let DisplayChipKind::Tenant { menu_open, menu } = &mut self.display_chip_kind {
+            *menu_open = false;
+            menu.update(ctx, |menu, _| {
+                menu.reset_selected_index();
+            });
             ctx.notify();
         }
     }
@@ -1292,7 +1352,8 @@ impl DisplayChip {
             DisplayChipKind::GitBranch { menu_open, menu }
             | DisplayChipKind::GitBranchStatus {
                 menu_open, menu, ..
-            } => {
+            }
+            | DisplayChipKind::Tenant { menu_open, menu } => {
                 if *menu_open {
                     ctx.focus(menu);
                     return true;
@@ -1305,7 +1366,6 @@ impl DisplayChip {
             | DisplayChipKind::VirtualEnvironment
             | DisplayChipKind::CondaEnvironment
             | DisplayChipKind::NodeVersion { .. }
-            | DisplayChipKind::Tenant { .. }
             | DisplayChipKind::AgentPlanAndTodoList { .. }
             | DisplayChipKind::GithubPullRequest => {}
         }
@@ -2048,8 +2108,8 @@ impl DisplayChip {
 
     fn tenant_chip(
         &self,
-        popup: &ViewHandle<TenantPopupView>,
-        popup_open: bool,
+        menu: &ViewHandle<DisplayChipMenu>,
+        menu_open: bool,
         app: &AppContext,
     ) -> Box<dyn Element> {
         let appearance = Appearance::as_ref(app);
@@ -2062,7 +2122,7 @@ impl DisplayChip {
             } else {
                 super::BIC_ORANGE
             };
-            let hovered = state.is_hovered() && !popup_open;
+            let hovered = state.is_hovered() && !menu_open;
             let mut config = UdiChipConfig::new_with_icon(Icon::Bic, color, chip_text.clone())
                 .with_hovered(hovered);
             if is_in_agent_view {
@@ -2077,7 +2137,7 @@ impl DisplayChip {
         .finish();
 
         let mut stack = Stack::new().with_child(hoverable);
-        if popup_open {
+        if menu_open {
             let positioning = self.menu_positioning_provider.menu_position(app);
             let (parent_anchor, child_anchor) = Self::positioning_to_anchors(positioning);
             let offset = match positioning {
@@ -2085,7 +2145,7 @@ impl DisplayChip {
                 MenuPositioning::AboveInputBox => vec2f(0., -4.),
             };
             stack.add_positioned_overlay_child(
-                ChildView::new(popup).finish(),
+                ChildView::new(menu).finish(),
                 OffsetPositioning::offset_from_parent(
                     offset,
                     ParentOffsetBounds::WindowByPosition,
@@ -2119,8 +2179,8 @@ impl DisplayChip {
             DisplayChipKind::NodeVersion { popup, popup_open } => {
                 Some(self.node_version_chip(popup, *popup_open, app))
             }
-            DisplayChipKind::Tenant { popup, popup_open } => {
-                Some(self.tenant_chip(popup, *popup_open, app))
+            DisplayChipKind::Tenant { menu, menu_open } => {
+                Some(self.tenant_chip(menu, *menu_open, app))
             }
             DisplayChipKind::CondaEnvironment => Some(self.conda_environment_chip(app)),
             DisplayChipKind::AgentPlanAndTodoList { plan_and_todo_list } => {
@@ -2236,7 +2296,8 @@ impl TypedActionView for DisplayChip {
                 DisplayChipKind::GitBranch { menu_open, menu }
                 | DisplayChipKind::GitBranchStatus {
                     menu_open, menu, ..
-                } => {
+                }
+                | DisplayChipKind::Tenant { menu_open, menu } => {
                     *menu_open = false;
                     menu.update(ctx, |menu, _| {
                         menu.reset_selected_index();
@@ -2260,8 +2321,7 @@ impl TypedActionView for DisplayChip {
                 | DisplayChipKind::Text
                 | DisplayChipKind::GithubPullRequest
                 | DisplayChipKind::GitDiffStats { .. } => {}
-                DisplayChipKind::NodeVersion { popup_open, .. }
-                | DisplayChipKind::Tenant { popup_open, .. } => {
+                DisplayChipKind::NodeVersion { popup_open, .. } => {
                     *popup_open = false;
                     ctx.notify();
                 }
@@ -2282,6 +2342,23 @@ impl TypedActionView for DisplayChip {
                         *menu_open = !*menu_open;
                         let is_menu_open = *menu_open;
                         if is_menu_open {
+                            ctx.focus(menu);
+                        } else {
+                            menu.update(ctx, |menu, _| {
+                                menu.reset_selected_index();
+                            });
+                        }
+                        ctx.emit(PromptDisplayChipEvent::ToggleMenu { open: is_menu_open });
+                        ctx.notify();
+                    }
+                    DisplayChipKind::Tenant { menu, menu_open } => {
+                        *menu_open = !*menu_open;
+                        let is_menu_open = *menu_open;
+                        if is_menu_open {
+                            // The tenants file changes over time, so re-read it on every open.
+                            let current_tenant = self.value.as_ref().map(|v| v.to_string());
+                            let items = Self::tenant_items(current_tenant.as_deref());
+                            menu.update(ctx, |menu, ctx| menu.update_menu_items(items, ctx));
                             ctx.focus(menu);
                         } else {
                             menu.update(ctx, |menu, _| {
@@ -2314,19 +2391,6 @@ impl TypedActionView for DisplayChip {
                         ctx.notify();
                     }
                     DisplayChipKind::NodeVersion { popup, popup_open } => {
-                        *popup_open = !*popup_open;
-                        let is_open = *popup_open;
-                        if is_open {
-                            popup.update(ctx, |popup_view, popup_ctx| {
-                                popup_view.focus_content(popup_ctx);
-                            });
-                        } else {
-                            ctx.focus_self();
-                        }
-                        ctx.emit(PromptDisplayChipEvent::ToggleMenu { open: is_open });
-                        ctx.notify();
-                    }
-                    DisplayChipKind::Tenant { popup, popup_open } => {
                         *popup_open = !*popup_open;
                         let is_open = *popup_open;
                         if is_open {

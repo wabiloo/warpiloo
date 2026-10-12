@@ -8,9 +8,10 @@ See [PRODUCT.md](./PRODUCT.md) for behavior.
 - `app/Cargo.toml`, `app/src/features.rs`: the `tenant_chip` Cargo feature and its mapping to the flag.
 - `app/src/context_chips/mod.rs`: `ContextChipKind::Tenant`, its `to_chip` arm, placeholder value, color (`BIC_ORANGE`), `udi_icon`, and the `available_chips` entry. Both the chip and the entry are gated on the flag.
 - `app/src/context_chips/builtins.rs`: `tenant_label()`, the per-shell command that prints the first line of `.tenant`.
-- `app/src/context_chips/tenant_popup.rs`: `TenantPopupView`, modelled on `NodeVersionPopupView`, plus tenant-list parsing.
-- `app/src/context_chips/tenant_popup_tests.rs`: parsing tests.
-- `app/src/context_chips/display_chip.rs`: `DisplayChipKind::Tenant`, chip rendering, toggle/close handling, and `PromptChipShellCommand::SwitchTenant`.
+- `app/src/context_chips/tenants.rs`: reading the tenants file, tenant-list parsing and sorting.
+- `app/src/context_chips/tenants_tests.rs`: parsing and sorting tests.
+- `app/src/context_chips/display_menu.rs`: `ChipMenuType::Tenants`, the shared searchable menu (also used by the directory and branch chips).
+- `app/src/context_chips/display_chip.rs`: `DisplayChipKind::Tenant`, `TenantItem`, `tenant_menu()`, chip rendering, toggle/close handling, and `PromptChipShellCommand::SwitchTenant`.
 - `app/src/terminal/input.rs`: renders `SwitchTenant` into a shell command.
 - `app/assets/bundled/svg/bic-logo.svg`, `crates/warp_core/src/ui/icons.rs`: `Icon::Bic`.
 
@@ -18,9 +19,9 @@ See [PRODUCT.md](./PRODUCT.md) for behavior.
 
 **Display.** The chip is a `shell_builtin` with `RefreshConfig::OnDemandOnly`, the same as the Kubernetes chip. The command runs in the session's shell, so `.tenant` is resolved against the session's working directory. A failing command yields no value, which hides the chip.
 
-**Tenant list.** `list_tenants()` reads `$BPKIO_HOME/tenants`, falling back to `~/.bpkio/tenants`, mirroring `_get_bpkio_home()` in the Python SDK. `parse_tenant_labels` returns only `[section]` names. The file also contains API keys and passwords, so no values are read, retained or logged. The list is read each time the popup is created.
+**Tenant list.** `list_tenants()` sorts case-insensitively and reads `$BPKIO_HOME/tenants`, falling back to `~/.bpkio/tenants`, mirroring `_get_bpkio_home()` in the Python SDK. `parse_tenant_labels` returns only `[section]` names. The file also contains API keys and passwords, so no values are read, retained or logged. The list is re-read from disk every time the menu is opened, so tenants added or removed while Warp is running show up on the next click.
 
-**Switching.** Selecting a row emits `PromptChipShellCommand::SwitchTenant`, which is typed and run in the session like `NvmUse`. Labels are quoted with `shell_quote_arg`. The write happens in the shell, so it is visible to the user and respects the session's cwd and permissions.
+**Switching.** The menu is a `DisplayChipMenu` of type `Tenants`, which supplies the search field and fuzzy filtering. Selecting a row emits `PromptChipShellCommand::SwitchTenant`, which is typed and run in the session like `NvmUse`. Labels are quoted with `shell_quote_arg`. The write happens in the shell, so it is visible to the user and respects the session's cwd and permissions.
 
 **Icon.** `bic-logo.svg` was traced from `bpkio-cli/assets/logo_col1.png` in `bpkio-python-tools` with potrace (a single even-odd path in a 24x24 viewBox) so the chip color tints it.
 

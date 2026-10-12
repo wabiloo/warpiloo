@@ -15,7 +15,7 @@ A prompt chip, "bic Tenant", that shows which broadpeak.io tenant the current fo
 - The chip shows the first line of the `.tenant` file in the session's working directory.
 - The chip is hidden when there is no `.tenant` file in the working directory.
 - The chip is orange (`#ff9500`, sampled from the bic logo) and uses a bic logo icon.
-- Clicking the chip opens a menu listing every tenant configured on this machine. The current tenant has a checkmark.
+- Clicking the chip opens a menu listing every tenant configured on this machine, sorted alphabetically (case-insensitive). The current tenant has a checkmark. A search field at the top filters the list as you type, with the same fuzzy matching and keyboard navigation as the directory and branch menus.
 - Choosing a tenant writes its label to `.tenant` in the working directory, by running a visible shell command in the session: `printf %s '<label>' > .tenant` (`Set-Content` in PowerShell). The chip updates to the new label.
 - If no tenants are configured, the menu says so.
 - The chip appears in the prompt editor's list of available chips and is not part of the default prompt.

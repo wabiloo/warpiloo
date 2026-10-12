@@ -25,3 +25,15 @@ password = hunter2
 fn empty_file_has_no_tenants() {
     assert!(parse_tenant_labels("").is_empty());
 }
+
+#[test]
+fn sorts_labels_case_insensitively() {
+    let mut labels = vec![
+        "zeta".to_string(),
+        "Beta".to_string(),
+        "alpha".to_string(),
+        "default".to_string(),
+    ];
+    sort_tenant_labels(&mut labels);
+    assert_eq!(labels, vec!["alpha", "Beta", "default", "zeta"]);
+}
